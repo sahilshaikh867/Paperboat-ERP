@@ -1,16 +1,24 @@
 {
-  "name": "exam-forge-coding-assessment",
+  "name": "paperboat-erp",
   "private": true,
   "version": "0.1.0",
   "workspaces": [
     "apps/*"
   ],
+  "prisma": {
+    "schema": "apps/backend/prisma/schema.prisma"
+  },
   "scripts": {
     "dev:frontend": "npm run dev --workspace=apps/frontend",
     "dev:backend": "npm run dev --workspace=apps/backend",
     "build": "npm run build --workspaces --if-present",
-    "prisma:generate": "npm run prisma:generate --workspace=apps/backend",
+    "build:backend": "npx prisma generate --schema=apps/backend/prisma/schema.prisma && npx prisma db push --schema=apps/backend/prisma/schema.prisma && npm run build --workspace=apps/backend",
+    "start:backend": "npm run start --workspace=apps/backend",
+    "build:frontend": "npm run build --workspace=apps/frontend",
+    "start:frontend": "npm run start --workspace=apps/frontend",
+    "prisma:generate": "npx prisma generate --schema=apps/backend/prisma/schema.prisma",
     "prisma:migrate": "npm run prisma:migrate --workspace=apps/backend",
+    "prisma:push": "npx prisma db push --schema=apps/backend/prisma/schema.prisma",
     "db:seed": "npm run db:seed --workspace=apps/backend"
   }
 }
