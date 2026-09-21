@@ -1,0 +1,114 @@
+# ==============================================================================
+# ⛵ Paperboat Education ERP Platform & ExamForge Assessment Engine
+# Production Docker Compose Orchestration
+# Services: PostgreSQL 16, Redis 7 (Fast Cache & Queues), Express Backend, Next.js Frontend
+# ==============================================================================
+
+version: '3.8'
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. POSTGRESQL DATABASE
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: paperboat-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-exam_forge}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d exam_forge"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - paperboat-network
+
+  # ----------------------------------------------------------------------------
+  # 2. REDIS IN-MEMORY CACHE & DATABASE ACCELERATOR
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: paperboat-redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel notice --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - paperboat-network
+
+  # ----------------------------------------------------------------------------
+  # 3. BACKEND API SERVICE (Node.js Express + Prisma)
+  # ----------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+    container_name: paperboat-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-exam_forge}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET:-paperboat_super_secret_jwt_key_2026_production}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      SUPER_ADMIN_DEFAULT_EMAIL: ${SUPER_ADMIN_DEFAULT_EMAIL:-examforge.superadmin@gmail.com}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_ADMIN_API_KEY: ${RESEND_ADMIN_API_KEY:-}
+    ports:
+      - "5001:5001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - paperboat-network
+
+  # ----------------------------------------------------------------------------
+  # 4. FRONTEND WEB APPLICATION (Next.js 14 Standalone)
+  # ----------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./apps/frontend
+      dockerfile: Dockerfile
+    container_name: paperboat-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:5001}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - paperboat-network
+
+# ------------------------------------------------------------------------------
+# VOLUMES & NETWORKS
+# ------------------------------------------------------------------------------
+volumes:
+  pgdata:
+    driver: local
+  redisdata:
+    driver: local
+
+networks:
+  paperboat-network:
+    driver: bridge
