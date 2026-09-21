@@ -1,68 +1,102 @@
 import IORedis, { RedisOptions } from 'ioredis';
 
 const redisUrl = process.env.REDIS_URL;
-const redisHost = process.env.REDIS_HOST || '127.0.0.1';
+const redisHost = process.env.REDIS_HOST;
 const redisPort = Number(process.env.REDIS_PORT || 6379);
 const redisPassword = process.env.REDIS_PASSWORD || undefined;
 
+// Check if external Redis has been explicitly configured in environment
+export const isRedisConfigured = Boolean(
+  redisUrl || redisHost || process.env.ENABLE_LOCAL_REDIS === 'true'
+);
+
 const baseOptions: RedisOptions = {
-  host: redisHost,
+  host: redisHost || '127.0.0.1',
   port: redisPort,
   password: redisPassword,
   retryStrategy(times) {
-    // Reconnect with exponential backoff up to 2 seconds
-    const delay = Math.min(times * 50, 2000);
-    return delay;
+    // Stop reconnect spamming if Redis server does not exist
+    if (times > 3) {
+      return null;
+    }
+    return Math.min(times * 100, 1000);
   },
-  maxRetriesPerRequest: null, // Required for BullMQ
-  enableReadyCheck: true,
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
   lazyConnect: true,
 };
 
 export const redisConnectionOptions = baseOptions;
 
 /**
- * BullMQ requires distinct Redis connections per Queue / Worker instance
+ * Creates a BullMQ Redis connection if configured, otherwise returns null
  */
-export function createRedisConnection(): IORedis {
-  if (redisUrl) {
-    return new IORedis(redisUrl, { maxRetriesPerRequest: null, lazyConnect: true });
+export function createRedisConnection(): IORedis | null {
+  if (!isRedisConfigured) {
+    return null;
   }
-  return new IORedis(baseOptions);
+
+  try {
+    const client = redisUrl
+      ? new IORedis(redisUrl, { maxRetriesPerRequest: null, lazyConnect: true })
+      : new IORedis(baseOptions);
+
+    client.on('error', () => {
+      // Catch connection errors silently to prevent process termination
+    });
+
+    return client;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Shared singleton Redis client for database query caching and fast in-memory key-value lookups
+ * Shared singleton Redis client for database query caching (optional with in-memory fallback)
  */
 let sharedRedisClient: IORedis | null = null;
+let hasLoggedStatus = false;
 
-export function getSharedRedisClient(): IORedis {
-  if (!sharedRedisClient) {
-    if (redisUrl) {
-      sharedRedisClient = new IORedis(redisUrl, {
-        lazyConnect: true,
-        enableOfflineQueue: false,
-      });
-    } else {
-      sharedRedisClient = new IORedis({
-        ...baseOptions,
-        lazyConnect: true,
-        enableOfflineQueue: false,
-      });
+export function getSharedRedisClient(): IORedis | null {
+  if (!isRedisConfigured) {
+    if (!hasLoggedStatus) {
+      console.log('💡 In-Memory High-Speed Cache Active (Redis URL not set - operating in standalone mode).');
+      hasLoggedStatus = true;
     }
-
-    sharedRedisClient.on('connect', () => {
-      console.log('⚡ Redis Cache Engine: Connected to Redis server.');
-    });
-
-    sharedRedisClient.on('error', (err) => {
-      console.warn('⚠️ Redis Cache Engine Warning (operating in graceful fallback):', err.message);
-    });
-
-    // Initiate connection asynchronously
-    sharedRedisClient.connect().catch((err) => {
-      console.warn('⚠️ Redis initial connection deferred / fallback active:', err.message);
-    });
+    return null;
   }
+
+  if (!sharedRedisClient) {
+    try {
+      if (redisUrl) {
+        sharedRedisClient = new IORedis(redisUrl, {
+          lazyConnect: true,
+          enableOfflineQueue: false,
+          maxRetriesPerRequest: null,
+        });
+      } else {
+        sharedRedisClient = new IORedis({
+          ...baseOptions,
+          lazyConnect: true,
+          enableOfflineQueue: false,
+        });
+      }
+
+      sharedRedisClient.on('connect', () => {
+        console.log('⚡ Redis Cache Engine: Connected to Redis server.');
+      });
+
+      sharedRedisClient.on('error', () => {
+        // Handled silently by CacheService fallback
+      });
+
+      sharedRedisClient.connect().catch(() => {
+        // Fallback active
+      });
+    } catch {
+      sharedRedisClient = null;
+    }
+  }
+
   return sharedRedisClient;
 }

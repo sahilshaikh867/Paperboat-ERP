@@ -1,17 +1,17 @@
 # ==============================================================================
-# ⛵ Paperboat Education ERP Platform - Render Blueprint
-# 1-Click Infrastructure Deployment on Render (render.com)
+# ⛵ Paperboat Education ERP Platform - Render 1-Click Blueprint
+# 100% Free-Tier Compatible Architecture
 # ==============================================================================
 
 services:
   # ----------------------------------------------------------------------------
-  # 1. BACKEND API SERVICE (Express.js + Prisma + Redis Cache)
+  # 1. BACKEND API SERVICE (Express.js + Prisma + Built-in In-Memory & Redis Cache)
   # ----------------------------------------------------------------------------
   - type: web
     name: paperboat-backend
     env: node
     region: oregon
-    plan: starter
+    plan: free
     rootDir: apps/backend
     buildCommand: npm install && npx prisma generate && npx prisma db push && npm run build
     startCommand: npm run start
@@ -23,10 +23,6 @@ services:
         fromDatabase:
           name: paperboat-postgres
           property: connectionString
-      - key: REDIS_URL
-        fromRedis:
-          name: paperboat-redis
-          property: connectionString
       - key: JWT_SECRET
         generateValue: true
       - key: SUPER_ADMIN_DEFAULT_EMAIL
@@ -34,6 +30,8 @@ services:
       - key: RESEND_API_KEY
         sync: false
       - key: RESEND_ADMIN_API_KEY
+        sync: false
+      - key: REDIS_URL
         sync: false
 
   # ----------------------------------------------------------------------------
@@ -43,7 +41,7 @@ services:
     name: paperboat-frontend
     env: node
     region: oregon
-    plan: starter
+    plan: free
     rootDir: apps/frontend
     buildCommand: npm install && npm run build
     startCommand: npm run start
@@ -58,19 +56,11 @@ services:
           value: https://paperboat-backend.onrender.com
 
 # ------------------------------------------------------------------------------
-# DATABASES & IN-MEMORY CACHE
+# MANAGED DATABASE (Render Free Tier PostgreSQL 16)
 # ------------------------------------------------------------------------------
 databases:
-  # Managed PostgreSQL 16 Database
   - name: paperboat-postgres
     region: oregon
     plan: free
     databaseName: exam_forge
     user: postgres
-
-redis:
-  # Managed Redis Cache & Queue Store
-  - name: paperboat-redis
-    region: oregon
-    plan: free
-    maxmemoryPolicy: allkeys-lru

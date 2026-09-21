@@ -1,33 +1,33 @@
 import { getSharedRedisClient } from '../config/redis';
 
-// In-memory fallback cache map if Redis is temporarily offline
+// High-speed In-Memory Cache Store (Active when Redis is not deployed or offline)
 interface MemoryCacheEntry {
   value: string;
   expiresAt: number;
 }
-const localMemoryFallback = new Map<string, MemoryCacheEntry>();
+const localMemoryCache = new Map<string, MemoryCacheEntry>();
 
 export class CacheService {
-  private static redis = getSharedRedisClient();
-
   /**
-   * Retrieve cached item from Redis (with fallback to local memory)
+   * Retrieve cached item from Redis (or in-memory cache)
    */
   static async get<T>(key: string): Promise<T | null> {
-    try {
-      if (this.redis.status === 'ready' || this.redis.status === 'connect') {
-        const raw = await this.redis.get(key);
+    const redis = getSharedRedisClient();
+
+    if (redis && (redis.status === 'ready' || redis.status === 'connect')) {
+      try {
+        const raw = await redis.get(key);
         if (raw) {
           return JSON.parse(raw) as T;
         }
         return null;
+      } catch {
+        // Fall through to memory cache
       }
-    } catch (err: any) {
-      console.warn(`[CacheService.get] Redis lookup error for "${key}":`, err.message);
     }
 
-    // Local memory fallback
-    const local = localMemoryFallback.get(key);
+    // In-memory fallback
+    const local = localMemoryCache.get(key);
     if (local && local.expiresAt > Date.now()) {
       try {
         return JSON.parse(local.value) as T;
@@ -35,28 +35,30 @@ export class CacheService {
         return null;
       }
     } else if (local) {
-      localMemoryFallback.delete(key);
+      localMemoryCache.delete(key);
     }
 
     return null;
   }
 
   /**
-   * Save item to cache with TTL in seconds (default 300 seconds = 5 minutes)
+   * Save item to cache with TTL in seconds (default 120 seconds)
    */
-  static async set(key: string, value: any, ttlSeconds = 300): Promise<void> {
+  static async set(key: string, value: any, ttlSeconds = 120): Promise<void> {
     const serialized = JSON.stringify(value);
-    try {
-      if (this.redis.status === 'ready' || this.redis.status === 'connect') {
-        await this.redis.set(key, serialized, 'EX', ttlSeconds);
+    const redis = getSharedRedisClient();
+
+    if (redis && (redis.status === 'ready' || redis.status === 'connect')) {
+      try {
+        await redis.set(key, serialized, 'EX', ttlSeconds);
         return;
+      } catch {
+        // Fall through to memory cache
       }
-    } catch (err: any) {
-      console.warn(`[CacheService.set] Redis set error for "${key}":`, err.message);
     }
 
-    // Local memory fallback
-    localMemoryFallback.set(key, {
+    // In-memory cache
+    localMemoryCache.set(key, {
       value: serialized,
       expiresAt: Date.now() + ttlSeconds * 1000,
     });
@@ -66,42 +68,46 @@ export class CacheService {
    * Remove specific key from cache
    */
   static async del(key: string): Promise<void> {
-    try {
-      if (this.redis.status === 'ready' || this.redis.status === 'connect') {
-        await this.redis.del(key);
+    const redis = getSharedRedisClient();
+
+    if (redis && (redis.status === 'ready' || redis.status === 'connect')) {
+      try {
+        await redis.del(key);
+      } catch {
+        // Fall through
       }
-    } catch (err: any) {
-      console.warn(`[CacheService.del] Redis del error for "${key}":`, err.message);
     }
-    localMemoryFallback.delete(key);
+    localMemoryCache.delete(key);
   }
 
   /**
-   * Invalidate multiple keys matching a pattern (e.g., "academic:org123:*")
+   * Invalidate multiple keys matching a pattern (e.g. "academic:*")
    */
   static async delPattern(pattern: string): Promise<void> {
-    try {
-      if (this.redis.status === 'ready' || this.redis.status === 'connect') {
-        const keys = await this.redis.keys(pattern);
+    const redis = getSharedRedisClient();
+
+    if (redis && (redis.status === 'ready' || redis.status === 'connect')) {
+      try {
+        const keys = await redis.keys(pattern);
         if (keys && keys.length > 0) {
-          await this.redis.del(...keys);
+          await redis.del(...keys);
         }
+      } catch {
+        // Fall through
       }
-    } catch (err: any) {
-      console.warn(`[CacheService.delPattern] Redis delPattern error for "${pattern}":`, err.message);
     }
 
-    // Local memory pattern deletion
+    // Invalidate local memory pattern
     const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
-    for (const k of Array.from(localMemoryFallback.keys())) {
+    for (const k of Array.from(localMemoryCache.keys())) {
       if (regex.test(k)) {
-        localMemoryFallback.delete(k);
+        localMemoryCache.delete(k);
       }
     }
   }
 
   /**
-   * Cache-Aside Wrapper: Returns cached result if available; otherwise invokes fetcher, caches, and returns.
+   * Cache-Aside Wrapper: Returns cached result if available; otherwise executes fetcher and caches.
    */
   static async wrap<T>(key: string, ttlSeconds: number, fetcher: () => Promise<T>): Promise<T> {
     const cached = await this.get<T>(key);

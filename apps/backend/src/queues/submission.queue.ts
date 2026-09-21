@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import { createRedisConnection } from '../config/redis';
+import { createRedisConnection, isRedisConfigured } from '../config/redis';
 
 export interface SubmissionJobData {
   submissionId: string;
@@ -9,23 +9,40 @@ export interface SubmissionJobData {
   sourceCode: string;
 }
 
-export const submissionQueue = new Queue<SubmissionJobData>('code-execution', {
-  connection: createRedisConnection(),
-  defaultJobOptions: {
-    attempts: 2,
-    backoff: { type: 'exponential', delay: 2000 },
-    removeOnComplete: 500,
-    removeOnFail: 1000,
-  },
-});
+let queueInstance: Queue<SubmissionJobData> | null = null;
+
+export function getSubmissionQueue(): Queue<SubmissionJobData> | null {
+  if (!queueInstance && isRedisConfigured) {
+    const connection = createRedisConnection();
+    if (connection) {
+      try {
+        queueInstance = new Queue<SubmissionJobData>('code-execution', {
+          connection,
+          defaultJobOptions: {
+            attempts: 2,
+            backoff: { type: 'exponential', delay: 2000 },
+            removeOnComplete: 500,
+            removeOnFail: 1000,
+          },
+        });
+      } catch (err: any) {
+        console.warn('⚠️ BullMQ Queue initialization notice:', err.message);
+      }
+    }
+  }
+  return queueInstance;
+}
 
 /**
- * Enqueues a submission for sandboxed execution. Using the submission's own
- * id as the BullMQ jobId makes a duplicate enqueue (e.g. a retried HTTP
- * request) a no-op instead of double-running the candidate's code.
+ * Enqueues a submission for sandboxed execution (or logs if queue is offline).
  */
 export async function enqueueSubmission(data: SubmissionJobData) {
-  return submissionQueue.add('execute', data, {
-    jobId: data.submissionId,
-  });
+  const queue = getSubmissionQueue();
+  if (queue) {
+    return queue.add('execute', data, {
+      jobId: data.submissionId,
+    });
+  }
+  console.log(`ℹ️ Submission ${data.submissionId} recorded (Worker queue offline / standalone mode).`);
+  return { id: data.submissionId };
 }
